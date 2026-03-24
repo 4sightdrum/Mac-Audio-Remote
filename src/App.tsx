@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Volume2, VolumeX, Mic, MicOff, Settings, MonitorSpeaker, Headphones, Radio, Activity, Wifi, Smartphone, Laptop, AlertCircle, Info } from 'lucide-react';
+import { Volume2, VolumeX, Mic, MicOff, Settings, MonitorSpeaker, Headphones, Radio, Activity, Wifi, Smartphone, Laptop, AlertCircle, Info, Play, Pause, SkipForward, SkipBack, Search, Music as MusicIcon } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 const SAMPLE_RATES = [44100, 48000, 88200, 96000];
@@ -25,6 +25,12 @@ export default function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [isMac, setIsMac] = useState(false);
   const [hasSwitchAudio, setHasSwitchAudio] = useState(false);
+
+  // Music State
+  const [musicState, setMusicState] = useState<'playing' | 'paused' | 'stopped' | 'error'>('stopped');
+  const [currentTrack, setCurrentTrack] = useState('');
+  const [currentArtist, setCurrentArtist] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
 
   const fetchAudioState = useCallback(async () => {
     try {
@@ -52,12 +58,30 @@ export default function App() {
     }
   }, []);
 
+  const fetchMusicState = useCallback(async () => {
+    try {
+      const res = await fetch('/api/music');
+      if (res.ok) {
+        const data = await res.json();
+        setMusicState(data.state);
+        setCurrentTrack(data.track);
+        setCurrentArtist(data.artist);
+      }
+    } catch (err) {
+      console.error("Failed to fetch music state", err);
+    }
+  }, []);
+
   useEffect(() => {
     fetchAudioState();
+    fetchMusicState();
     // Poll every 2 seconds to keep in sync if changed on the Mac directly
-    const interval = setInterval(fetchAudioState, 2000);
+    const interval = setInterval(() => {
+      fetchAudioState();
+      fetchMusicState();
+    }, 2000);
     return () => clearInterval(interval);
-  }, [fetchAudioState]);
+  }, [fetchAudioState, fetchMusicState]);
 
   const updateVolume = async (newVol: number) => {
     setVolume(newVol);
@@ -130,6 +154,40 @@ export default function App() {
     }
   };
 
+  const handleMusicControl = async (action: 'playpause' | 'next track' | 'previous track') => {
+    // Optimistic UI update for play/pause
+    if (action === 'playpause') {
+      setMusicState(prev => prev === 'playing' ? 'paused' : 'playing');
+    }
+    try {
+      await fetch('/api/music/control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action })
+      });
+      setTimeout(fetchMusicState, 500);
+    } catch (err) {
+      console.error("Failed to control music", err);
+    }
+  };
+
+  const handleMusicSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!searchQuery.trim()) return;
+    
+    try {
+      await fetch('/api/music/play', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: searchQuery })
+      });
+      setSearchQuery('');
+      setTimeout(fetchMusicState, 1000);
+    } catch (err) {
+      console.error("Failed to search and play music", err);
+    }
+  };
+
   const formatSampleRate = (rate: number) => `${(rate / 1000).toFixed(1)} kHz`;
 
   return (
@@ -153,6 +211,72 @@ export default function App() {
 
       <main className="p-6 space-y-8 max-w-md mx-auto">
         
+        {/* Apple Music Section */}
+        <section className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xl font-semibold flex items-center gap-2">
+              <MusicIcon className="w-5 h-5 text-pink-500" />
+              Apple Music
+            </h2>
+          </div>
+          
+          <div className="bg-white/5 rounded-3xl p-5 border border-white/10 space-y-6">
+            
+            {/* Now Playing info */}
+            <div className="flex items-center gap-4">
+              <div className="w-16 h-16 bg-gradient-to-br from-pink-500 to-orange-400 rounded-2xl flex items-center justify-center shrink-0 shadow-lg shadow-pink-500/20">
+                <MusicIcon className="w-8 h-8 text-white/80" />
+              </div>
+              <div className="flex-1 min-w-0">
+                {musicState === 'stopped' ? (
+                  <p className="text-white/60 font-medium">Not Playing</p>
+                ) : (
+                  <>
+                    <h3 className="font-semibold text-lg truncate">{currentTrack || 'Unknown Track'}</h3>
+                    <p className="text-white/60 text-sm truncate">{currentArtist || 'Unknown Artist'}</p>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Playback Controls */}
+            <div className="flex items-center justify-center gap-6">
+              <button 
+                onClick={() => handleMusicControl('previous track')}
+                className="p-3 text-white/70 hover:text-white hover:bg-white/10 rounded-full transition-colors"
+              >
+                <SkipBack className="w-6 h-6" />
+              </button>
+              <button 
+                onClick={() => handleMusicControl('playpause')}
+                className="p-4 bg-white text-black rounded-full hover:scale-105 active:scale-95 transition-all shadow-lg shadow-white/10"
+              >
+                {musicState === 'playing' ? <Pause className="w-7 h-7" /> : <Play className="w-7 h-7 ml-1" />}
+              </button>
+              <button 
+                onClick={() => handleMusicControl('next track')}
+                className="p-3 text-white/70 hover:text-white hover:bg-white/10 rounded-full transition-colors"
+              >
+                <SkipForward className="w-6 h-6" />
+              </button>
+            </div>
+
+            {/* Search & Play */}
+            <form onSubmit={handleMusicSearch} className="relative">
+              <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none">
+                <Search className="w-4 h-4 text-white/40" />
+              </div>
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search library to play..."
+                className="w-full bg-black/40 border border-white/10 rounded-2xl py-3 pl-11 pr-4 text-sm text-white placeholder:text-white/40 focus:outline-none focus:border-pink-500/50 focus:ring-1 focus:ring-pink-500/50 transition-all"
+              />
+            </form>
+          </div>
+        </section>
+
         {/* Output Section */}
         <section className="space-y-4">
           <div className="flex items-center justify-between">

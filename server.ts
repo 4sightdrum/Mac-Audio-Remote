@@ -31,6 +31,7 @@ let mockState = {
   currentInput: 'MacBook Air Microphone',
   sampleRate: 48000,
   bitDepth: 24,
+  music: { state: 'paused', track: 'Bohemian Rhapsody', artist: 'Queen' },
   outputs: [
     { id: 'out-1', name: 'MacBook Air Speakers', type: 'output' },
     { id: 'out-2', name: 'External Headphones', type: 'output' }
@@ -193,6 +194,90 @@ AudioObjectSetPropertyData(id, &rateAddr, 0, nil, rateSize, &rate)
       if (bitDepth) mockState.bitDepth = bitDepth;
     }
     res.json({ success: true });
+  });
+
+  // Apple Music Routes
+  app.get('/api/music', async (req, res) => {
+    if (isMac) {
+      try {
+        const musicScript = path.join(os.tmpdir(), 'get_music.scpt');
+        if (!fs.existsSync(musicScript)) {
+          fs.writeFileSync(musicScript, `
+tell application "System Events"
+    if not (exists process "Music") then return "stopped"
+end tell
+tell application "Music"
+    set pState to player state as string
+    if pState is "playing" or pState is "paused" then
+        set tName to name of current track
+        set tArtist to artist of current track
+        return pState & "|" & tName & "|" & tArtist
+    else
+        return pState
+    end if
+end tell
+          `.trim());
+        }
+        const result = await runCommand(`osascript ${musicScript}`);
+        if (result === 'stopped' || result === 'Not Running' || !result) {
+          res.json({ state: 'stopped', track: '', artist: '' });
+        } else {
+          const [state, track, artist] = result.split('|');
+          res.json({ state, track: track || '', artist: artist || '' });
+        }
+      } catch (e) {
+        res.json({ state: 'error', track: '', artist: '' });
+      }
+    } else {
+      res.json(mockState.music);
+    }
+  });
+
+  app.post('/api/music/control', async (req, res) => {
+    const { action } = req.body; // 'playpause', 'next track', 'previous track'
+    if (isMac) {
+      await runCommand(`osascript -e 'tell application "Music" to ${action}'`);
+    } else {
+      if (action === 'playpause') {
+        mockState.music.state = mockState.music.state === 'playing' ? 'paused' : 'playing';
+      }
+    }
+    res.json({ success: true });
+  });
+
+  app.post('/api/music/play', async (req, res) => {
+    const { query } = req.body;
+    try {
+      // Search the global Apple Music catalog via iTunes Search API
+      const searchRes = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(query)}&entity=song&limit=1`);
+      const data = await searchRes.json();
+      
+      if (data.results && data.results.length > 0) {
+        const track = data.results[0];
+        // Convert https:// to music:// to force opening in the Music app
+        const trackUrl = track.trackViewUrl.replace('https://', 'music://');
+        
+        if (isMac) {
+          const script = `open location "${trackUrl}"\ndelay 1.5\ntell application "Music" to play`;
+          await runCommand(`osascript -e '${script.split('\n').join("' -e '")}'`);
+        } else {
+          mockState.music.track = track.trackName;
+          mockState.music.artist = track.artistName;
+          mockState.music.state = 'playing';
+        }
+        res.json({ success: true, track: track.trackName, artist: track.artistName });
+      } else {
+        // Fallback to local library search if not found on Apple Music catalog
+        if (isMac) {
+          const safeQuery = query.replace(/"/g, '\\"');
+          await runCommand(`osascript -e 'tell application "Music" to play track "${safeQuery}"'`);
+        }
+        res.json({ success: true });
+      }
+    } catch (err) {
+      console.error("Search failed", err);
+      res.status(500).json({ error: 'Search failed' });
+    }
   });
 
   // Vite middleware for development
