@@ -1,0 +1,5 @@
+{
+  "name": "Mac Audio Remote",
+  "description": "A remote control interface for macOS audio settings, designed for iOS.",
+  "requestFramePermissions": []
+}
