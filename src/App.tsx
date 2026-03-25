@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Volume2, VolumeX, Mic, MicOff, Settings, MonitorSpeaker, Headphones, Radio, Activity, Wifi, Smartphone, Laptop, AlertCircle, Info, Play, Pause, SkipForward, SkipBack, Search, Music as MusicIcon } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Volume2, VolumeX, Mic, MicOff, Settings, MonitorSpeaker, Headphones, Radio, Activity, Wifi, Smartphone, Laptop, AlertCircle, Info, Play, Pause, SkipForward, SkipBack, Search, Music as MusicIcon, Cast, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 const SAMPLE_RATES = [44100, 48000, 88200, 96000];
@@ -31,6 +31,11 @@ export default function App() {
   const [currentTrack, setCurrentTrack] = useState('');
   const [currentArtist, setCurrentArtist] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchType, setSearchType] = useState<'song' | 'album' | 'artist' | 'playlist'>('song');
+  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [airplayDevices, setAirplayDevices] = useState<{name: string, selected: boolean, kind: string}[]>([]);
+  const searchRef = useRef<HTMLDivElement>(null);
 
   const fetchAudioState = useCallback(async () => {
     try {
@@ -72,16 +77,61 @@ export default function App() {
     }
   }, []);
 
+  const fetchAirplayState = useCallback(async () => {
+    try {
+      const res = await fetch('/api/music/airplay');
+      if (res.ok) {
+        const data = await res.json();
+        setAirplayDevices(data.devices);
+      }
+    } catch (err) {
+      console.error("Failed to fetch airplay state", err);
+    }
+  }, []);
+
   useEffect(() => {
     fetchAudioState();
     fetchMusicState();
+    fetchAirplayState();
     // Poll every 2 seconds to keep in sync if changed on the Mac directly
     const interval = setInterval(() => {
       fetchAudioState();
       fetchMusicState();
+      fetchAirplayState();
     }, 2000);
     return () => clearInterval(interval);
-  }, [fetchAudioState, fetchMusicState]);
+  }, [fetchAudioState, fetchMusicState, fetchAirplayState]);
+
+  // Debounced search
+  useEffect(() => {
+    if (!searchQuery.trim()) {
+      setSearchResults([]);
+      return;
+    }
+    const delay = setTimeout(async () => {
+      setIsSearching(true);
+      try {
+        const res = await fetch(`/api/music/search?term=${encodeURIComponent(searchQuery)}&type=${searchType}`);
+        const data = await res.json();
+        setSearchResults(data.results || []);
+      } catch (e) {
+        console.error("Search failed", e);
+      }
+      setIsSearching(false);
+    }, 400);
+    return () => clearTimeout(delay);
+  }, [searchQuery, searchType]);
+
+  // Close search results when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (searchRef.current && !searchRef.current.contains(event.target as Node)) {
+        setSearchResults([]);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   const updateVolume = async (newVol: number) => {
     setVolume(newVol);
@@ -182,9 +232,41 @@ export default function App() {
         body: JSON.stringify({ query: searchQuery })
       });
       setSearchQuery('');
+      setSearchResults([]);
       setTimeout(fetchMusicState, 1000);
     } catch (err) {
       console.error("Failed to search and play music", err);
+    }
+  };
+
+  const playSearchResult = async (result: any) => {
+    setSearchQuery('');
+    setSearchResults([]);
+    try {
+      const url = (result.trackViewUrl || result.collectionViewUrl || result.artistLinkUrl).replace('https://', 'music://');
+      await fetch('/api/music/play', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: url, isUrl: true })
+      });
+      setTimeout(fetchMusicState, 1000);
+    } catch (err) {
+      console.error("Failed to play search result", err);
+    }
+  };
+
+  const toggleAirplay = async (deviceName: string, selected: boolean) => {
+    // Optimistic update
+    setAirplayDevices(prev => prev.map(d => d.name === deviceName ? { ...d, selected } : d));
+    try {
+      await fetch('/api/music/airplay', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceName, selected })
+      });
+      setTimeout(fetchAirplayState, 500);
+    } catch (err) {
+      console.error("Failed to toggle airplay", err);
     }
   };
 
@@ -262,18 +344,112 @@ export default function App() {
             </div>
 
             {/* Search & Play */}
-            <form onSubmit={handleMusicSearch} className="relative">
-              <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none">
-                <Search className="w-4 h-4 text-white/40" />
+            <div className="space-y-3" ref={searchRef}>
+              <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
+                {['song', 'album', 'artist', 'playlist'].map(type => (
+                  <button 
+                    key={type} 
+                    onClick={() => setSearchType(type as any)} 
+                    className={`px-4 py-1.5 rounded-full text-xs font-medium capitalize whitespace-nowrap transition-colors ${searchType === type ? 'bg-pink-500 text-white shadow-lg shadow-pink-500/20' : 'bg-white/5 text-white/60 hover:bg-white/10'}`}
+                  >
+                    {type}
+                  </button>
+                ))}
               </div>
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search library to play..."
-                className="w-full bg-black/40 border border-white/10 rounded-2xl py-3 pl-11 pr-4 text-sm text-white placeholder:text-white/40 focus:outline-none focus:border-pink-500/50 focus:ring-1 focus:ring-pink-500/50 transition-all"
-              />
-            </form>
+              <form onSubmit={handleMusicSearch} className="relative">
+                <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none">
+                  {isSearching ? (
+                    <Loader2 className="w-4 h-4 text-white/40 animate-spin" />
+                  ) : (
+                    <Search className="w-4 h-4 text-white/40" />
+                  )}
+                </div>
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder={`Search for a ${searchType}...`}
+                  className="w-full bg-black/40 border border-white/10 rounded-2xl py-3 pl-11 pr-4 text-sm text-white placeholder:text-white/40 focus:outline-none focus:border-pink-500/50 focus:ring-1 focus:ring-pink-500/50 transition-all"
+                />
+                
+                {/* Autofill Dropdown */}
+                <AnimatePresence>
+                  {searchResults.length > 0 && (
+                    <motion.div 
+                      initial={{ opacity: 0, y: -10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -10 }}
+                      className="absolute top-full left-0 right-0 mt-2 bg-zinc-900 border border-white/10 rounded-2xl overflow-hidden z-50 max-h-64 overflow-y-auto shadow-2xl"
+                    >
+                      {searchResults.map((result, idx) => (
+                        <button 
+                          key={result.trackId || result.collectionId || result.artistId || idx}
+                          type="button"
+                          onClick={() => playSearchResult(result)}
+                          className="w-full text-left px-4 py-3 hover:bg-white/10 flex items-center gap-3 border-b border-white/5 last:border-0 transition-colors"
+                        >
+                          {result.artworkUrl60 ? (
+                            <img src={result.artworkUrl60} alt="" className="w-10 h-10 rounded-lg object-cover" />
+                          ) : (
+                            <div className="w-10 h-10 rounded-lg bg-white/5 flex items-center justify-center">
+                              <MusicIcon className="w-5 h-5 text-white/40" />
+                            </div>
+                          )}
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm font-medium text-white truncate">
+                              {result.trackName || result.collectionName || result.artistName}
+                            </div>
+                            <div className="text-xs text-white/50 truncate">
+                              {result.artistName || 'Apple Music'}
+                            </div>
+                          </div>
+                        </button>
+                      ))}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </form>
+            </div>
+          </div>
+        </section>
+
+        {/* AirPlay & Output Groups Section */}
+        <section className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xl font-semibold flex items-center gap-2">
+              <Cast className="w-5 h-5 text-blue-400" />
+              AirPlay Output Groups
+            </h2>
+          </div>
+          
+          <div className="bg-white/5 rounded-3xl p-5 border border-white/10 space-y-4">
+            {airplayDevices.length === 0 ? (
+              <p className="text-sm text-white/50 text-center py-2">No AirPlay devices found</p>
+            ) : (
+              airplayDevices.map(device => (
+                <div key={device.name} className="flex items-center justify-between group">
+                  <div className="flex items-center gap-3">
+                    {device.kind?.toLowerCase().includes('homepod') ? (
+                      <MonitorSpeaker className="w-5 h-5 text-white/60" />
+                    ) : device.kind?.toLowerCase().includes('tv') ? (
+                      <MonitorSpeaker className="w-5 h-5 text-white/60" />
+                    ) : (
+                      <Laptop className="w-5 h-5 text-white/60" />
+                    )}
+                    <span className="text-white/90 font-medium text-sm">{device.name}</span>
+                  </div>
+                  <button
+                    onClick={() => toggleAirplay(device.name, !device.selected)}
+                    className={`w-12 h-6 rounded-full transition-colors relative ${device.selected ? 'bg-blue-500' : 'bg-white/20 group-hover:bg-white/30'}`}
+                  >
+                    <div className={`w-5 h-5 bg-white rounded-full absolute top-0.5 transition-transform ${device.selected ? 'translate-x-6.5' : 'translate-x-0.5'}`} />
+                  </button>
+                </div>
+              ))
+            )}
+            <p className="text-xs text-white/40 text-center pt-2">
+              Select multiple devices to sync audio output across them.
+            </p>
           </div>
         </section>
 

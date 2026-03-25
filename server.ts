@@ -32,6 +32,11 @@ let mockState = {
   sampleRate: 48000,
   bitDepth: 24,
   music: { state: 'paused', track: 'Bohemian Rhapsody', artist: 'Queen' },
+  airplay: [
+    { name: 'Living Room HomePod', selected: false, kind: 'HomePod' },
+    { name: 'Apple TV 4K', selected: false, kind: 'Apple TV' },
+    { name: 'Computer', selected: true, kind: 'Computer' }
+  ],
   outputs: [
     { id: 'out-1', name: 'MacBook Air Speakers', type: 'output' },
     { id: 'out-2', name: 'External Headphones', type: 'output' }
@@ -246,8 +251,20 @@ end tell
   });
 
   app.post('/api/music/play', async (req, res) => {
-    const { query } = req.body;
+    const { query, isUrl } = req.body;
     try {
+      if (isUrl) {
+        if (isMac) {
+          const script = `open location "${query}"\ndelay 1.5\ntell application "Music" to play`;
+          await runCommand(`osascript -e '${script.split('\n').join("' -e '")}'`);
+        } else {
+          mockState.music.track = 'Selected Track';
+          mockState.music.artist = 'Apple Music';
+          mockState.music.state = 'playing';
+        }
+        return res.json({ success: true });
+      }
+
       // Search the global Apple Music catalog via iTunes Search API
       const searchRes = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(query)}&entity=song&limit=1`);
       const data = await searchRes.json();
@@ -277,6 +294,66 @@ end tell
     } catch (err) {
       console.error("Search failed", err);
       res.status(500).json({ error: 'Search failed' });
+    }
+  });
+
+  // Advanced Search
+  app.get('/api/music/search', async (req, res) => {
+    const { term, type } = req.query;
+    if (!term) return res.json({ results: [] });
+    try {
+      const entityMap: Record<string, string> = { song: 'song', album: 'album', artist: 'musicArtist', playlist: 'musicTrack' };
+      const entity = entityMap[type as string] || 'song';
+      const searchRes = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(term as string)}&entity=${entity}&limit=10`);
+      const data = await searchRes.json();
+      res.json({ results: data.results || [] });
+    } catch (e) {
+      res.status(500).json({ error: 'Search failed' });
+    }
+  });
+
+  // AirPlay Devices
+  app.get('/api/music/airplay', async (req, res) => {
+    if (isMac) {
+      try {
+        const script = `
+          tell application "Music"
+            set outList to {}
+            repeat with d in AirPlay devices
+              set end of outList to (name of d) & "|" & (selected of d) & "|" & (kind of d)
+            end repeat
+            set AppleScript's text item delimiters to "\\n"
+            return outList as text
+          end tell
+        `;
+        const result = await runCommand(`osascript -e '${script.split('\n').join("' -e '")}'`);
+        if (!result) return res.json({ devices: [] });
+        const devices = result.trim().split('\n').map(line => {
+          const [name, selected, kind] = line.split('|');
+          return { name, selected: selected === 'true', kind };
+        });
+        res.json({ devices });
+      } catch (e) {
+        res.json({ devices: [] });
+      }
+    } else {
+      res.json({ devices: mockState.airplay || [] });
+    }
+  });
+
+  app.post('/api/music/airplay', async (req, res) => {
+    const { deviceName, selected } = req.body;
+    if (isMac) {
+      try {
+        await runCommand(`osascript -e 'tell application "Music" to set selected of AirPlay device "${deviceName}" to ${selected}'`);
+        res.json({ success: true });
+      } catch (e) {
+        res.status(500).json({ error: 'Failed to set AirPlay device' });
+      }
+    } else {
+      const dev = mockState.airplay?.find(d => d.name === deviceName);
+      if (dev) dev.selected = selected;
+      res.json({ success: true });
     }
   });
 
