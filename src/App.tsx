@@ -247,7 +247,12 @@ export default function App() {
       await fetch('/api/music/play', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: url, isUrl: true })
+        body: JSON.stringify({ 
+          query: url, 
+          isUrl: true,
+          trackName: result.trackName || result.collectionName,
+          artistName: result.artistName
+        })
       });
       setTimeout(fetchMusicState, 1000);
     } catch (err) {

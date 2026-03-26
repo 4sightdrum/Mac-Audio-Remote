@@ -251,15 +251,54 @@ end tell
   });
 
   app.post('/api/music/play', async (req, res) => {
-    const { query, isUrl } = req.body;
+    const { query, isUrl, trackName, artistName } = req.body;
+    
+    const playAppleMusicItem = async (url: string, tName?: string, aName?: string) => {
+      if (!isMac) return;
+      let played = false;
+      
+      // 1. Try playing from the local library first (most reliable, plays in background)
+      if (tName) {
+        const safeTrack = tName.replace(/"/g, '\\"');
+        const safeArtist = aName ? aName.replace(/"/g, '\\"') : '';
+        const libScript = `
+          tell application "Music"
+            try
+              set results to (every track whose name is "${safeTrack}" ${safeArtist ? `and artist is "${safeArtist}"` : ''})
+              if length of results > 0 then
+                play item 1 of results
+                return "played"
+              end if
+            end try
+            return "not_found"
+          end tell
+        `;
+        const libRes = await runCommand(`osascript -e '${libScript.split('\n').join("' -e '")}'`);
+        if (libRes === 'played') played = true;
+      }
+      
+      // 2. Fallback: Open the Apple Music URL and simulate the Return key to force play
+      if (!played) {
+        const playUrl = url.includes('?') ? `${url}&action=play` : `${url}?action=play`;
+        const script = `
+          tell application "Music" to activate
+          open location "${playUrl}"
+          delay 1.5
+          try
+            tell application "System Events" to keystroke return
+          end try
+        `;
+        await runCommand(`osascript -e '${script.split('\n').join("' -e '")}'`);
+      }
+    };
+
     try {
       if (isUrl) {
         if (isMac) {
-          const script = `open location "${query}"\ndelay 1.5\ntell application "Music" to play`;
-          await runCommand(`osascript -e '${script.split('\n').join("' -e '")}'`);
+          await playAppleMusicItem(query, trackName, artistName);
         } else {
-          mockState.music.track = 'Selected Track';
-          mockState.music.artist = 'Apple Music';
+          mockState.music.track = trackName || 'Selected Track';
+          mockState.music.artist = artistName || 'Apple Music';
           mockState.music.state = 'playing';
         }
         return res.json({ success: true });
@@ -271,12 +310,10 @@ end tell
       
       if (data.results && data.results.length > 0) {
         const track = data.results[0];
-        // Convert https:// to music:// to force opening in the Music app
         const trackUrl = track.trackViewUrl.replace('https://', 'music://');
         
         if (isMac) {
-          const script = `open location "${trackUrl}"\ndelay 1.5\ntell application "Music" to play`;
-          await runCommand(`osascript -e '${script.split('\n').join("' -e '")}'`);
+          await playAppleMusicItem(trackUrl, track.trackName, track.artistName);
         } else {
           mockState.music.track = track.trackName;
           mockState.music.artist = track.artistName;
